@@ -1,0 +1,80 @@
+// Tests for the 1D and 2D parabolic (heat) solvers, checked against
+// closed-form solutions of the heat equation with zero Dirichlet BCs.
+// Run with:  vanic test tests/test_heat.vani
+
+use "../src/lib.vani";
+
+fn main() -> i64 {
+    let pi: f64 = f64_pi();
+
+    // 1D: u_t = alpha u_xx on [0,1], u(0,t)=u(1,t)=0, u(x,0)=sin(pi x).
+    // Exact: u(x,t) = sin(pi x) exp(-alpha pi^2 t).
+    let n: i64 = 21;
+    let dx: f64 = 1.0 / ((n - 1) as f64);
+    let alpha: f64 = 1.0;
+    let dt: f64 = 0.001;
+    assert pde_heat1d_stability_r(alpha, dx, dt) <= 0.5;
+
+    let u0: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < n {
+        let x: f64 = (i as f64) * dx;
+        push(mut ref u0, sin(pi * x));
+        i = i + 1;
+    }
+    let steps: i64 = 50;
+    let uf: Vec<f64> = pde_heat1d_solve(ref u0, alpha, dx, dt, steps, 0.0, 0.0);
+    let t: f64 = (steps as f64) * dt;
+    i = 0;
+    while i < n {
+        let x: f64 = (i as f64) * dx;
+        let exact: f64 = sin(pi * x) * exp((0.0 - alpha) * pi * pi * t);
+        assert abs(uf[i] - exact) < 1.0e-3;
+        i = i + 1;
+    }
+
+    // 2D: u_t = alpha (u_xx + u_yy) on the unit square, zero Dirichlet BCs,
+    // u(x,y,0) = sin(pi x) sin(pi y).
+    // Exact: u(x,y,t) = sin(pi x) sin(pi y) exp(-alpha * 2 * pi^2 * t).
+    let nx: i64 = 11;
+    let ny: i64 = 11;
+    let dxv: f64 = 1.0 / ((nx - 1) as f64);
+    let dyv: f64 = 1.0 / ((ny - 1) as f64);
+    let dt2: f64 = 0.001;
+    assert pde_heat2d_stability_r(alpha, dxv, dyv, dt2) <= 0.5;
+
+    let N: i64 = nx * ny;
+    let u0h: Vec<f64> = vec();
+    let boundary: Vec<f64> = vec();
+    let ii: i64 = 0;
+    while ii < nx {
+        let jj: i64 = 0;
+        while jj < ny {
+            let x: f64 = (ii as f64) * dxv;
+            let y: f64 = (jj as f64) * dyv;
+            push(mut ref u0h, sin(pi * x) * sin(pi * y));
+            push(mut ref boundary, 0.0);
+            jj = jj + 1;
+        }
+        ii = ii + 1;
+    }
+
+    let steps2: i64 = 20;
+    let ufh: Vec<f64> = pde_heat2d_solve(ref u0h, nx, ny, alpha, dxv, dyv, dt2, steps2, ref boundary);
+    let t2: f64 = (steps2 as f64) * dt2;
+    ii = 0;
+    while ii < nx {
+        let jj: i64 = 0;
+        while jj < ny {
+            let x: f64 = (ii as f64) * dxv;
+            let y: f64 = (jj as f64) * dyv;
+            let idx: i64 = pde_grid2d_index(ii, jj, ny);
+            let exact: f64 = sin(pi * x) * sin(pi * y) * exp((0.0 - alpha) * 2.0 * pi * pi * t2);
+            assert abs(ufh[idx] - exact) < 1.0e-3;
+            jj = jj + 1;
+        }
+        ii = ii + 1;
+    }
+
+    return 0;
+}

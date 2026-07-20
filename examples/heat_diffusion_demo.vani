@@ -1,0 +1,51 @@
+// A 1D rod with a hot spot in the middle, held at 0 degrees at both ends,
+// diffusing over time -- the classic heat-equation demo. Reports the
+// stability number before running (required <= 0.5 for the explicit
+// scheme) and prints the temperature profile every few steps.
+//
+// Run with:  vanic run examples/heat_diffusion_demo.vani
+
+use "../src/lib.vani";
+
+fn main() -> i64 {
+    let n: i64 = 11;
+    let dx: f64 = 1.0 / ((n - 1) as f64);
+    let alpha: f64 = 0.5;
+    let dt: f64 = 0.005;
+
+    print "stability r (must be <= 0.5):";
+    print pde_heat1d_stability_r(alpha, dx, dt);
+
+    // Initial condition: a hot spot at the center, 0 elsewhere.
+    let u: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < n {
+        if i == n / 2 {
+            push(mut ref u, 100.0);
+        } else {
+            push(mut ref u, 0.0);
+        }
+        i = i + 1;
+    }
+
+    print "initial temperature profile:";
+    i = 0;
+    while i < n {
+        print u[i];
+        i = i + 1;
+    }
+
+    let round: i64 = 0;
+    while round < 4 {
+        u = pde_heat1d_solve(ref u, alpha, dx, dt, 20, 0.0, 0.0);
+        print "temperature profile after another 20 steps:";
+        i = 0;
+        while i < n {
+            print u[i];
+            i = i + 1;
+        }
+        round = round + 1;
+    }
+
+    return 0;
+}

@@ -1,0 +1,439 @@
+// vani-pde  v0.1.0 — finite-difference PDE solvers
+//
+// IMPORTANT — do NOT reimplement vāṇी compiler builtins.
+// Already available as builtins (call directly, never redeclare here):
+//   sin cos exp sqrt abs f64_pi()  push pop len set vec
+//
+// Depends on vani-matrix (mat_zeros, mat_solve) for the two elliptic
+// (steady-state) solvers -- see [deps] in vani.toml. Does NOT depend on
+// vani-calculus: no natural reuse point was found without forcing an
+// awkward dependency (vani-calculus's ODE solvers are scalar-state
+// fn(f64)->f64 steppers; PDE time-marching needs a whole-grid Vec<f64>
+// state per step, a different shape of problem), so this package stands
+// alone against vani-matrix only, despite the roadmap sketch listing both.
+//
+// DISCRETIZATION DESIGN (decided up front, not left implicit):
+//   - Grid: flat row-major Vec<f64>, explicit dimension args, matching
+//     vani-matrix/vani-tensor's convention. 1D grid = Vec<f64> of length n
+//     (points 0..n-1). 2D grid = Vec<f64> of length nx*ny; point (i, j) is
+//     at flat offset i*ny + j (pde_grid2d_index), i.e. i indexes the
+//     "matrix row" (x-direction), j the "matrix column" (y-direction) --
+//     same layout convention as a vani-matrix matrix or a vani-tensor
+//     rank-2 tensor.
+//   - Boundary conditions: Dirichlet only in v0.1.0 (fixed values on the
+//     domain edge). 1D solvers take two scalars (left_bc, right_bc). 2D
+//     solvers take a boundary: Vec<f64> the same length as the grid, whose
+//     border entries (i==0 || i==nx-1 || j==0 || j==ny-1) are used and
+//     whose interior entries are ignored -- avoids a second smaller array
+//     with its own indexing scheme. Neumann/periodic BCs are out of scope,
+//     see TODO.md.
+//   - Elliptic equations (Laplace/Poisson, time-independent): solved
+//     directly. The finite-difference stencil is assembled into a dense
+//     matrix (boundary rows become identity rows) and solved once via
+//     vani-matrix's mat_solve. Dense assembly is O((nx*ny)^2) memory,
+//     appropriate for this library's "modest grid sizes" scope, same
+//     pragmatic tradeoff as vani-geometry's O(n^2) convex hull.
+//   - Parabolic (heat) and hyperbolic (wave) equations, time-dependent:
+//     solved via EXPLICIT finite-difference time marching (FTCS for heat,
+//     central-difference for wave) -- the simplest correct scheme, chosen
+//     over implicit/Crank-Nicolson methods to keep this package's first
+//     version tractable, matching this ecosystem's precedent of picking
+//     the simplest correct algorithm first (see vani-signal's dft/fft
+//     split, vani-geometry's brute-force convex hull). Explicit schemes
+//     are only CONDITIONALLY stable -- callers must respect the stability
+//     bound. This library computes the stability number for you
+//     (pde_heat1d_stability_r / pde_heat2d_stability_r / pde_wave1d_courant
+//     / pde_wave2d_courant) but does not enforce it at runtime (same
+//     caller-trust convention as the rest of the vani/kosh ecosystem: see
+//     vani-tensor's tensor_reshape not runtime-checking size equality).
+use "../vendor/matrix/src/lib.vani";
+
+// ── Grid utilities ────────────────────────────────────────────────────────────
+
+// Flatten a 2D grid index: point (i, j) on a grid with ny columns is at
+// offset i*ny + j.
+#[bounded_stack(bytes = 64)]
+fn pde_grid2d_index(i: i64, j: i64, ny: i64) -> i64 {
+    return i * ny + j;
+}
+
+// ── 1D Laplace / Poisson (elliptic): u'' = f, Dirichlet BCs ──────────────────
+
+// Assembles the n x n finite-difference matrix for d^2u/dx^2 on n points
+// spaced dx apart: interior rows use the [1, -2, 1]/dx^2 stencil; the two
+// boundary rows are identity rows (so a Dirichlet value passed straight
+// through mat_solve becomes exactly u[0] / u[n-1]).
+#[bounded_stack(bytes = 240)]
+fn pde_laplace1d_assemble(n: i64, dx: f64) -> Vec<f64> {
+    let A: Vec<f64> = mat_zeros(n, n);
+    let inv_dx2: f64 = 1.0 / (dx * dx);
+    set(mut ref A, 0, 1.0);
+    set(mut ref A, (n - 1) * n + (n - 1), 1.0);
+    let i: i64 = 1;
+    while i < n - 1 {
+        set(mut ref A, i * n + (i - 1), inv_dx2);
+        set(mut ref A, i * n + i, 0.0 - 2.0 * inv_dx2);
+        set(mut ref A, i * n + (i + 1), inv_dx2);
+        i = i + 1;
+    }
+    return A;
+}
+
+// Right-hand side for pde_laplace1d_assemble's system: f at interior
+// points, the two Dirichlet values at the boundary rows.
+#[bounded_stack(bytes = 128)]
+fn pde_laplace1d_rhs(n: i64, f: ref Vec<f64>, left_bc: f64, right_bc: f64) -> Vec<f64> {
+    let b: Vec<f64> = vec();
+    push(mut ref b, left_bc);
+    let i: i64 = 1;
+    while i < n - 1 {
+        push(mut ref b, f[i]);
+        i = i + 1;
+    }
+    push(mut ref b, right_bc);
+    return b;
+}
+
+// Solves u'' = f(x) on n grid points spaced dx apart, with Dirichlet
+// boundary values u[0] = left_bc, u[n-1] = right_bc. f is sampled at every
+// grid point (f[0] and f[n-1] are ignored, since those rows are Dirichlet).
+#[bounded_stack(bytes = 632)]
+fn pde_laplace1d_solve(n: i64, dx: f64, f: ref Vec<f64>, left_bc: f64, right_bc: f64) -> Vec<f64> {
+    let A: Vec<f64> = pde_laplace1d_assemble(n, dx);
+    let b: Vec<f64> = pde_laplace1d_rhs(n, f, left_bc, right_bc);
+    return mat_solve(ref A, ref b, n);
+}
+
+// ── 2D Laplace / Poisson (elliptic): u_xx + u_yy = f, Dirichlet BCs ──────────
+
+// Assembles the (nx*ny) x (nx*ny) finite-difference matrix for the 2D
+// Laplacian on an nx-by-ny grid (dx, dy spacing): interior rows use the
+// 5-point stencil; border rows (i==0 || i==nx-1 || j==0 || j==ny-1) are
+// identity rows.
+#[bounded_stack(bytes = 328)]
+fn pde_laplace2d_assemble(nx: i64, ny: i64, dx: f64, dy: f64) -> Vec<f64> {
+    let N: i64 = nx * ny;
+    let A: Vec<f64> = mat_zeros(N, N);
+    let inv_dx2: f64 = 1.0 / (dx * dx);
+    let inv_dy2: f64 = 1.0 / (dy * dy);
+    let i: i64 = 0;
+    while i < nx {
+        let j: i64 = 0;
+        while j < ny {
+            let row: i64 = pde_grid2d_index(i, j, ny);
+            if i == 0 || i == nx - 1 || j == 0 || j == ny - 1 {
+                set(mut ref A, row * N + row, 1.0);
+            } else {
+                let west: i64 = pde_grid2d_index(i - 1, j, ny);
+                let east: i64 = pde_grid2d_index(i + 1, j, ny);
+                let south: i64 = pde_grid2d_index(i, j - 1, ny);
+                let north: i64 = pde_grid2d_index(i, j + 1, ny);
+                set(mut ref A, row * N + west, inv_dx2);
+                set(mut ref A, row * N + east, inv_dx2);
+                set(mut ref A, row * N + row, 0.0 - 2.0 * inv_dx2 - 2.0 * inv_dy2);
+                set(mut ref A, row * N + south, inv_dy2);
+                set(mut ref A, row * N + north, inv_dy2);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return A;
+}
+
+// Right-hand side for pde_laplace2d_assemble's system: f at interior
+// points, boundary's border entries at the border rows.
+#[bounded_stack(bytes = 216)]
+fn pde_laplace2d_rhs(nx: i64, ny: i64, f: ref Vec<f64>, boundary: ref Vec<f64>) -> Vec<f64> {
+    let b: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < nx {
+        let j: i64 = 0;
+        while j < ny {
+            let idx: i64 = pde_grid2d_index(i, j, ny);
+            if i == 0 || i == nx - 1 || j == 0 || j == ny - 1 {
+                push(mut ref b, boundary[idx]);
+            } else {
+                push(mut ref b, f[idx]);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return b;
+}
+
+// Solves u_xx + u_yy = f(x,y) on an nx-by-ny grid (dx, dy spacing), with
+// Dirichlet boundary values from boundary's border entries. f is sampled at
+// every grid point (interior entries only are used).
+#[bounded_stack(bytes = 648)]
+fn pde_laplace2d_solve(nx: i64, ny: i64, dx: f64, dy: f64, f: ref Vec<f64>, boundary: ref Vec<f64>) -> Vec<f64> {
+    let A: Vec<f64> = pde_laplace2d_assemble(nx, ny, dx, dy);
+    let b: Vec<f64> = pde_laplace2d_rhs(nx, ny, f, boundary);
+    let N: i64 = nx * ny;
+    return mat_solve(ref A, ref b, N);
+}
+
+// ── 1D heat equation (parabolic): u_t = alpha * u_xx, Dirichlet BCs ──────────
+
+// FTCS stability number r = alpha*dt/dx^2. The explicit scheme is only
+// stable for r <= 0.5 -- check this before calling pde_heat1d_step/solve.
+#[bounded_stack(bytes = 64)]
+fn pde_heat1d_stability_r(alpha: f64, dx: f64, dt: f64) -> f64 {
+    return alpha * dt / (dx * dx);
+}
+
+// One explicit FTCS time step: u_new[i] = u[i] + r*(u[i+1] - 2u[i] + u[i-1])
+// for interior i, with u_new[0] = left_bc, u_new[n-1] = right_bc.
+#[bounded_stack(bytes = 224)]
+fn pde_heat1d_step(u: ref Vec<f64>, alpha: f64, dx: f64, dt: f64, left_bc: f64, right_bc: f64) -> Vec<f64> {
+    let n: i64 = len(u) as i64;
+    let r: f64 = pde_heat1d_stability_r(alpha, dx, dt);
+    let out: Vec<f64> = vec();
+    push(mut ref out, left_bc);
+    let i: i64 = 1;
+    while i < n - 1 {
+        push(mut ref out, u[i] + r * (u[i + 1] - 2.0 * u[i] + u[i - 1]));
+        i = i + 1;
+    }
+    push(mut ref out, right_bc);
+    return out;
+}
+
+// Runs `steps` explicit FTCS time steps from initial condition u0.
+#[bounded_stack(bytes = 424)]
+fn pde_heat1d_solve(u0: ref Vec<f64>, alpha: f64, dx: f64, dt: f64, steps: i64, left_bc: f64, right_bc: f64) -> Vec<f64> {
+    let n: i64 = len(u0) as i64;
+    let u: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < n {
+        push(mut ref u, u0[i]);
+        i = i + 1;
+    }
+    let s: i64 = 0;
+    while s < steps {
+        u = pde_heat1d_step(ref u, alpha, dx, dt, left_bc, right_bc);
+        s = s + 1;
+    }
+    return u;
+}
+
+// ── 2D heat equation (parabolic): u_t = alpha*(u_xx + u_yy), Dirichlet BCs ───
+
+// 2D FTCS stability number r = alpha*dt*(1/dx^2 + 1/dy^2). Stable for
+// r <= 0.5.
+#[bounded_stack(bytes = 72)]
+fn pde_heat2d_stability_r(alpha: f64, dx: f64, dy: f64, dt: f64) -> f64 {
+    return alpha * dt * (1.0 / (dx * dx) + 1.0 / (dy * dy));
+}
+
+// One explicit FTCS time step on an nx-by-ny grid.
+#[bounded_stack(bytes = 304)]
+fn pde_heat2d_step(u: ref Vec<f64>, nx: i64, ny: i64, alpha: f64, dx: f64, dy: f64, dt: f64, boundary: ref Vec<f64>) -> Vec<f64> {
+    let out: Vec<f64> = vec();
+    let inv_dx2: f64 = 1.0 / (dx * dx);
+    let inv_dy2: f64 = 1.0 / (dy * dy);
+    let i: i64 = 0;
+    while i < nx {
+        let j: i64 = 0;
+        while j < ny {
+            let idx: i64 = pde_grid2d_index(i, j, ny);
+            if i == 0 || i == nx - 1 || j == 0 || j == ny - 1 {
+                push(mut ref out, boundary[idx]);
+            } else {
+                let west: i64 = pde_grid2d_index(i - 1, j, ny);
+                let east: i64 = pde_grid2d_index(i + 1, j, ny);
+                let south: i64 = pde_grid2d_index(i, j - 1, ny);
+                let north: i64 = pde_grid2d_index(i, j + 1, ny);
+                let lap: f64 = (u[east] - 2.0 * u[idx] + u[west]) * inv_dx2
+                             + (u[north] - 2.0 * u[idx] + u[south]) * inv_dy2;
+                push(mut ref out, u[idx] + alpha * dt * lap);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Runs `steps` explicit FTCS time steps from initial condition u0.
+#[bounded_stack(bytes = 520)]
+fn pde_heat2d_solve(u0: ref Vec<f64>, nx: i64, ny: i64, alpha: f64, dx: f64, dy: f64, dt: f64, steps: i64, boundary: ref Vec<f64>) -> Vec<f64> {
+    let N: i64 = nx * ny;
+    let u: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < N {
+        push(mut ref u, u0[i]);
+        i = i + 1;
+    }
+    let s: i64 = 0;
+    while s < steps {
+        u = pde_heat2d_step(ref u, nx, ny, alpha, dx, dy, dt, boundary);
+        s = s + 1;
+    }
+    return u;
+}
+
+// ── 1D wave equation (hyperbolic): u_tt = c^2 * u_xx, Dirichlet BCs ──────────
+
+// Courant number c*dt/dx. The explicit central-difference scheme is stable
+// for courant <= 1.
+#[bounded_stack(bytes = 64)]
+fn pde_wave1d_courant(c: f64, dx: f64, dt: f64) -> f64 {
+    return c * dt / dx;
+}
+
+// Special first time step (no u at t=-dt exists yet): a Taylor-series start
+// from the initial displacement u0 and initial velocity v0.
+#[bounded_stack(bytes = 240)]
+fn pde_wave1d_first_step(u0: ref Vec<f64>, v0: ref Vec<f64>, c: f64, dx: f64, dt: f64, left_bc: f64, right_bc: f64) -> Vec<f64> {
+    let n: i64 = len(u0) as i64;
+    let courant: f64 = pde_wave1d_courant(c, dx, dt);
+    let courant2: f64 = courant * courant;
+    let out: Vec<f64> = vec();
+    push(mut ref out, left_bc);
+    let i: i64 = 1;
+    while i < n - 1 {
+        push(mut ref out, u0[i] + dt * v0[i] + 0.5 * courant2 * (u0[i + 1] - 2.0 * u0[i] + u0[i - 1]));
+        i = i + 1;
+    }
+    push(mut ref out, right_bc);
+    return out;
+}
+
+// One explicit central-difference time step, given the two previous time
+// levels u_prev (t - dt) and u_curr (t).
+#[bounded_stack(bytes = 240)]
+fn pde_wave1d_step(u_prev: ref Vec<f64>, u_curr: ref Vec<f64>, c: f64, dx: f64, dt: f64, left_bc: f64, right_bc: f64) -> Vec<f64> {
+    let n: i64 = len(u_curr) as i64;
+    let courant: f64 = pde_wave1d_courant(c, dx, dt);
+    let courant2: f64 = courant * courant;
+    let out: Vec<f64> = vec();
+    push(mut ref out, left_bc);
+    let i: i64 = 1;
+    while i < n - 1 {
+        push(mut ref out, 2.0 * u_curr[i] - u_prev[i] + courant2 * (u_curr[i + 1] - 2.0 * u_curr[i] + u_curr[i - 1]));
+        i = i + 1;
+    }
+    push(mut ref out, right_bc);
+    return out;
+}
+
+// Runs pde_wave1d_first_step then `steps - 1` more pde_wave1d_step calls,
+// from initial displacement u0 and initial velocity v0.
+#[bounded_stack(bytes = 544)]
+fn pde_wave1d_solve(u0: ref Vec<f64>, v0: ref Vec<f64>, c: f64, dx: f64, dt: f64, steps: i64, left_bc: f64, right_bc: f64) -> Vec<f64> {
+    let n: i64 = len(u0) as i64;
+    let u_prev: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < n {
+        push(mut ref u_prev, u0[i]);
+        i = i + 1;
+    }
+    if steps == 0 {
+        return u_prev;
+    }
+    let u_curr: Vec<f64> = pde_wave1d_first_step(ref u_prev, v0, c, dx, dt, left_bc, right_bc);
+    let s: i64 = 1;
+    while s < steps {
+        let u_next: Vec<f64> = pde_wave1d_step(ref u_prev, ref u_curr, c, dx, dt, left_bc, right_bc);
+        u_prev = u_curr;
+        u_curr = u_next;
+        s = s + 1;
+    }
+    return u_curr;
+}
+
+// ── 2D wave equation (hyperbolic): u_tt = c^2*(u_xx + u_yy), Dirichlet BCs ───
+
+// 2D CFL stability number c^2*dt^2*(1/dx^2 + 1/dy^2). Stable for <= 1.
+#[bounded_stack(bytes = 72)]
+fn pde_wave2d_courant(c: f64, dx: f64, dy: f64, dt: f64) -> f64 {
+    return c * c * dt * dt * (1.0 / (dx * dx) + 1.0 / (dy * dy));
+}
+
+// Special first time step on an nx-by-ny grid, from initial displacement u0
+// and initial velocity v0.
+#[bounded_stack(bytes = 312)]
+fn pde_wave2d_first_step(u0: ref Vec<f64>, v0: ref Vec<f64>, nx: i64, ny: i64, c: f64, dx: f64, dy: f64, dt: f64, boundary: ref Vec<f64>) -> Vec<f64> {
+    let out: Vec<f64> = vec();
+    let cx2: f64 = c * c * dt * dt / (dx * dx);
+    let cy2: f64 = c * c * dt * dt / (dy * dy);
+    let i: i64 = 0;
+    while i < nx {
+        let j: i64 = 0;
+        while j < ny {
+            let idx: i64 = pde_grid2d_index(i, j, ny);
+            if i == 0 || i == nx - 1 || j == 0 || j == ny - 1 {
+                push(mut ref out, boundary[idx]);
+            } else {
+                let west: i64 = pde_grid2d_index(i - 1, j, ny);
+                let east: i64 = pde_grid2d_index(i + 1, j, ny);
+                let south: i64 = pde_grid2d_index(i, j - 1, ny);
+                let north: i64 = pde_grid2d_index(i, j + 1, ny);
+                let v: f64 = u0[idx] + dt * v0[idx]
+                    + 0.5 * cx2 * (u0[east] - 2.0 * u0[idx] + u0[west])
+                    + 0.5 * cy2 * (u0[north] - 2.0 * u0[idx] + u0[south]);
+                push(mut ref out, v);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// One explicit central-difference time step on an nx-by-ny grid, given the
+// two previous time levels.
+#[bounded_stack(bytes = 312)]
+fn pde_wave2d_step(u_prev: ref Vec<f64>, u_curr: ref Vec<f64>, nx: i64, ny: i64, c: f64, dx: f64, dy: f64, dt: f64, boundary: ref Vec<f64>) -> Vec<f64> {
+    let out: Vec<f64> = vec();
+    let cx2: f64 = c * c * dt * dt / (dx * dx);
+    let cy2: f64 = c * c * dt * dt / (dy * dy);
+    let i: i64 = 0;
+    while i < nx {
+        let j: i64 = 0;
+        while j < ny {
+            let idx: i64 = pde_grid2d_index(i, j, ny);
+            if i == 0 || i == nx - 1 || j == 0 || j == ny - 1 {
+                push(mut ref out, boundary[idx]);
+            } else {
+                let west: i64 = pde_grid2d_index(i - 1, j, ny);
+                let east: i64 = pde_grid2d_index(i + 1, j, ny);
+                let south: i64 = pde_grid2d_index(i, j - 1, ny);
+                let north: i64 = pde_grid2d_index(i, j + 1, ny);
+                let v: f64 = 2.0 * u_curr[idx] - u_prev[idx]
+                    + cx2 * (u_curr[east] - 2.0 * u_curr[idx] + u_curr[west])
+                    + cy2 * (u_curr[north] - 2.0 * u_curr[idx] + u_curr[south]);
+                push(mut ref out, v);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Runs pde_wave2d_first_step then `steps - 1` more pde_wave2d_step calls.
+#[bounded_stack(bytes = 632)]
+fn pde_wave2d_solve(u0: ref Vec<f64>, v0: ref Vec<f64>, nx: i64, ny: i64, c: f64, dx: f64, dy: f64, dt: f64, steps: i64, boundary: ref Vec<f64>) -> Vec<f64> {
+    let N: i64 = nx * ny;
+    let u_prev: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < N {
+        push(mut ref u_prev, u0[i]);
+        i = i + 1;
+    }
+    if steps == 0 {
+        return u_prev;
+    }
+    let u_curr: Vec<f64> = pde_wave2d_first_step(ref u_prev, v0, nx, ny, c, dx, dy, dt, boundary);
+    let s: i64 = 1;
+    while s < steps {
+        let u_next: Vec<f64> = pde_wave2d_step(ref u_prev, ref u_curr, nx, ny, c, dx, dy, dt, boundary);
+        u_prev = u_curr;
+        u_curr = u_next;
+        s = s + 1;
+    }
+    return u_curr;
+}

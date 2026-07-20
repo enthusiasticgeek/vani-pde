@@ -1,0 +1,92 @@
+// Tests for the 1D and 2D hyperbolic (wave) solvers, checked against
+// closed-form solutions of the wave equation with zero Dirichlet BCs.
+// Run with:  vanic test tests/test_wave.vani
+
+use "../src/lib.vani";
+
+fn main() -> i64 {
+    let pi: f64 = f64_pi();
+
+    // 1D: u_tt = c^2 u_xx on [0,1], u(0,t)=u(1,t)=0, u(x,0)=sin(pi x),
+    // u_t(x,0)=0. Exact: u(x,t) = sin(pi x) cos(pi c t).
+    let n: i64 = 21;
+    let dx: f64 = 1.0 / ((n - 1) as f64);
+    let c: f64 = 1.0;
+    let dt: f64 = 0.01;
+    assert pde_wave1d_courant(c, dx, dt) <= 1.0;
+
+    let u0: Vec<f64> = vec();
+    let v0: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < n {
+        let x: f64 = (i as f64) * dx;
+        push(mut ref u0, sin(pi * x));
+        push(mut ref v0, 0.0);
+        i = i + 1;
+    }
+    let steps: i64 = 20;
+    let uf: Vec<f64> = pde_wave1d_solve(ref u0, ref v0, c, dx, dt, steps, 0.0, 0.0);
+    let t: f64 = (steps as f64) * dt;
+    i = 0;
+    while i < n {
+        let x: f64 = (i as f64) * dx;
+        let exact: f64 = sin(pi * x) * cos(pi * c * t);
+        assert abs(uf[i] - exact) < 1.0e-3;
+        i = i + 1;
+    }
+
+    // steps=0 is a degenerate but valid call: solve() should just return u0.
+    let uf0: Vec<f64> = pde_wave1d_solve(ref u0, ref v0, c, dx, dt, 0, 0.0, 0.0);
+    i = 0;
+    while i < n {
+        assert abs(uf0[i] - u0[i]) < 1.0e-12;
+        i = i + 1;
+    }
+
+    // 2D: u_tt = c^2(u_xx+u_yy) on the unit square, zero Dirichlet BCs,
+    // u(x,y,0) = sin(pi x) sin(pi y), u_t(x,y,0) = 0.
+    // Exact: u(x,y,t) = sin(pi x) sin(pi y) cos(pi c sqrt(2) t).
+    let nx: i64 = 11;
+    let ny: i64 = 11;
+    let dxv: f64 = 1.0 / ((nx - 1) as f64);
+    let dyv: f64 = 1.0 / ((ny - 1) as f64);
+    let dt2: f64 = 0.01;
+    assert pde_wave2d_courant(c, dxv, dyv, dt2) <= 1.0;
+
+    let N: i64 = nx * ny;
+    let u0w: Vec<f64> = vec();
+    let v0w: Vec<f64> = vec();
+    let boundary: Vec<f64> = vec();
+    let ii: i64 = 0;
+    while ii < nx {
+        let jj: i64 = 0;
+        while jj < ny {
+            let x: f64 = (ii as f64) * dxv;
+            let y: f64 = (jj as f64) * dyv;
+            push(mut ref u0w, sin(pi * x) * sin(pi * y));
+            push(mut ref v0w, 0.0);
+            push(mut ref boundary, 0.0);
+            jj = jj + 1;
+        }
+        ii = ii + 1;
+    }
+
+    let steps2: i64 = 10;
+    let ufw: Vec<f64> = pde_wave2d_solve(ref u0w, ref v0w, nx, ny, c, dxv, dyv, dt2, steps2, ref boundary);
+    let t2: f64 = (steps2 as f64) * dt2;
+    ii = 0;
+    while ii < nx {
+        let jj: i64 = 0;
+        while jj < ny {
+            let x: f64 = (ii as f64) * dxv;
+            let y: f64 = (jj as f64) * dyv;
+            let idx: i64 = pde_grid2d_index(ii, jj, ny);
+            let exact: f64 = sin(pi * x) * sin(pi * y) * cos(pi * c * sqrt(2.0) * t2);
+            assert abs(ufw[idx] - exact) < 1.0e-3;
+            jj = jj + 1;
+        }
+        ii = ii + 1;
+    }
+
+    return 0;
+}

@@ -1,0 +1,74 @@
+// Tests for the 1D and 2D elliptic (Laplace/Poisson) solvers.
+// Run with:  vanic test tests/test_laplace.vani
+
+use "../src/lib.vani";
+
+fn close(a: f64, b: f64) -> bool {
+    return abs(a - b) < 1.0e-9;
+}
+
+fn main() -> i64 {
+    // 1D: u'' = -2 on [0,1], u(0)=0, u(1)=0. Exact: u(x) = x - x^2.
+    let n: i64 = 11;
+    let dx: f64 = 1.0 / ((n - 1) as f64);
+    let f: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < n {
+        push(mut ref f, 0.0 - 2.0);
+        i = i + 1;
+    }
+    let u: Vec<f64> = pde_laplace1d_solve(n, dx, ref f, 0.0, 0.0);
+    i = 0;
+    while i < n {
+        let x: f64 = (i as f64) * dx;
+        let exact: f64 = x - x * x;
+        assert close(u[i], exact);
+        i = i + 1;
+    }
+
+    // 2D: u(x,y) = x^2 - y^2 is harmonic (u_xx + u_yy = 0). f=0 everywhere;
+    // boundary is the exact solution on the border. The 5-point Laplacian is
+    // exact for quadratics, so the interior must match exactly too -- not
+    // just approximately, a strong composed correctness check.
+    let nx: i64 = 5;
+    let ny: i64 = 5;
+    let dxv: f64 = 1.0 / ((nx - 1) as f64);
+    let dyv: f64 = 1.0 / ((ny - 1) as f64);
+    let N: i64 = nx * ny;
+    let f2: Vec<f64> = vec();
+    let boundary: Vec<f64> = vec();
+    i = 0;
+    while i < N {
+        push(mut ref f2, 0.0);
+        push(mut ref boundary, 0.0);
+        i = i + 1;
+    }
+    let ii: i64 = 0;
+    while ii < nx {
+        let jj: i64 = 0;
+        while jj < ny {
+            let x: f64 = (ii as f64) * dxv;
+            let y: f64 = (jj as f64) * dyv;
+            let idx: i64 = pde_grid2d_index(ii, jj, ny);
+            set(mut ref boundary, idx, x * x - y * y);
+            jj = jj + 1;
+        }
+        ii = ii + 1;
+    }
+    let u2: Vec<f64> = pde_laplace2d_solve(nx, ny, dxv, dyv, ref f2, ref boundary);
+    ii = 0;
+    while ii < nx {
+        let jj: i64 = 0;
+        while jj < ny {
+            let x: f64 = (ii as f64) * dxv;
+            let y: f64 = (jj as f64) * dyv;
+            let idx: i64 = pde_grid2d_index(ii, jj, ny);
+            let exact: f64 = x * x - y * y;
+            assert close(u2[idx], exact);
+            jj = jj + 1;
+        }
+        ii = ii + 1;
+    }
+
+    return 0;
+}

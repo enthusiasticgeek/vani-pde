@@ -1,0 +1,65 @@
+// A square drum membrane, clamped at the edges (zero Dirichlet), plucked at
+// the center with an initial displacement bump and released from rest.
+// Reports the Courant stability number and the center-point displacement
+// over time, which should oscillate as the wave reflects off the clamped
+// edges.
+//
+// Run with:  vanic run examples/membrane_wave_demo.vani
+
+use "../src/lib.vani";
+
+fn main() -> i64 {
+    let nx: i64 = 11;
+    let ny: i64 = 11;
+    let dx: f64 = 1.0 / ((nx - 1) as f64);
+    let dy: f64 = 1.0 / ((ny - 1) as f64);
+    let c: f64 = 1.0;
+    let dt: f64 = 0.02;
+
+    print "courant number (must be <= 1):";
+    print pde_wave2d_courant(c, dx, dy, dt);
+
+    let N: i64 = nx * ny;
+    let u0: Vec<f64> = vec();
+    let v0: Vec<f64> = vec();
+    let boundary: Vec<f64> = vec();
+    let ci: i64 = nx / 2;
+    let cj: i64 = ny / 2;
+    let i: i64 = 0;
+    while i < nx {
+        let j: i64 = 0;
+        while j < ny {
+            if i == ci {
+                if j == cj {
+                    push(mut ref u0, 1.0);
+                } else {
+                    push(mut ref u0, 0.0);
+                }
+            } else {
+                push(mut ref u0, 0.0);
+            }
+            push(mut ref v0, 0.0);
+            push(mut ref boundary, 0.0);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    print "center-point displacement over time (starts at 1.0, oscillates):";
+    let center_idx: i64 = pde_grid2d_index(ci, cj, ny);
+    print u0[center_idx];
+    let u_curr: Vec<f64> = pde_wave2d_first_step(ref u0, ref v0, nx, ny, c, dx, dy, dt, ref boundary);
+    let u_prev: Vec<f64> = u0;
+    print u_curr[center_idx];
+
+    let step: i64 = 0;
+    while step < 10 {
+        let u_next: Vec<f64> = pde_wave2d_step(ref u_prev, ref u_curr, nx, ny, c, dx, dy, dt, ref boundary);
+        print u_next[center_idx];
+        u_prev = u_curr;
+        u_curr = u_next;
+        step = step + 1;
+    }
+
+    return 0;
+}
