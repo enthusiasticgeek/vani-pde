@@ -48,12 +48,23 @@
 //     vani-tensor's tensor_reshape not runtime-checking size equality).
 // No `use` statement needed: vanic auto-includes every [deps] entry's
 // source before compiling.
+//
+// WCET (MAINT-1, added 2026-07-21 -- see kosh-index/ROADMAP.md):
+// pde_grid2d_index and the four stability-number functions
+// (pde_heat1d_stability_r/pde_heat2d_stability_r/pde_wave1d_courant/
+// pde_wave2d_courant) are the only genuinely O(1) functions here (real
+// #[wcet(cycles=N)], vanic check's exact reported worst-case, same
+// discipline as #[bounded_stack]). Every assembly/step/solve function
+// loops over the grid (or, for the *_solve wrappers, over `steps` time
+// steps too) -- unbounded under the checker's WCET model, documented
+// with a WCET formula comment instead.
 
 // ── Grid utilities ────────────────────────────────────────────────────────────
 
 // Flatten a 2D grid index: point (i, j) on a grid with ny columns is at
 // offset i*ny + j.
 #[bounded_stack(bytes = 64)]
+#[wcet(cycles = 12)]
 fn pde_grid2d_index(i: i64, j: i64, ny: i64) -> i64 {
     return i * ny + j;
 }
@@ -63,7 +74,8 @@ fn pde_grid2d_index(i: i64, j: i64, ny: i64) -> i64 {
 // Assembles the n x n finite-difference matrix for d^2u/dx^2 on n points
 // spaced dx apart: interior rows use the [1, -2, 1]/dx^2 stencil; the two
 // boundary rows are identity rows (so a Dirichlet value passed straight
-// through mat_solve becomes exactly u[0] / u[n-1]).
+// through mat_solve becomes exactly u[0] / u[n-1]). WCET: mat_zeros(n,n)
+// allocates n^2 entries, dominating the O(n) stencil loop -- O(n^2).
 #[bounded_stack(bytes = 240)]
 fn pde_laplace1d_assemble(n: i64, dx: f64) -> Vec<f64> {
     let A: Vec<f64> = mat_zeros(n, n);
@@ -81,7 +93,8 @@ fn pde_laplace1d_assemble(n: i64, dx: f64) -> Vec<f64> {
 }
 
 // Right-hand side for pde_laplace1d_assemble's system: f at interior
-// points, the two Dirichlet values at the boundary rows.
+// points, the two Dirichlet values at the boundary rows. WCET = 20 +
+// n * ~10 cycles.
 #[bounded_stack(bytes = 128)]
 fn pde_laplace1d_rhs(n: i64, f: ref Vec<f64>, left_bc: f64, right_bc: f64) -> Vec<f64> {
     let b: Vec<f64> = vec();
@@ -98,6 +111,8 @@ fn pde_laplace1d_rhs(n: i64, f: ref Vec<f64>, left_bc: f64, right_bc: f64) -> Ve
 // Solves u'' = f(x) on n grid points spaced dx apart, with Dirichlet
 // boundary values u[0] = left_bc, u[n-1] = right_bc. f is sampled at every
 // grid point (f[0] and f[n-1] are ignored, since those rows are Dirichlet).
+// WCET: assemble (O(n^2)) + rhs (O(n)) + mat_solve's O(n^3) Gaussian
+// elimination -- O(n^3) overall.
 #[bounded_stack(bytes = 632)]
 fn pde_laplace1d_solve(n: i64, dx: f64, f: ref Vec<f64>, left_bc: f64, right_bc: f64) -> Vec<f64> {
     let A: Vec<f64> = pde_laplace1d_assemble(n, dx);
@@ -110,7 +125,8 @@ fn pde_laplace1d_solve(n: i64, dx: f64, f: ref Vec<f64>, left_bc: f64, right_bc:
 // Assembles the (nx*ny) x (nx*ny) finite-difference matrix for the 2D
 // Laplacian on an nx-by-ny grid (dx, dy spacing): interior rows use the
 // 5-point stencil; border rows (i==0 || i==nx-1 || j==0 || j==ny-1) are
-// identity rows.
+// identity rows. WCET: N=nx*ny, mat_zeros(N,N) allocates N^2 entries,
+// dominating the O(N) stencil loop -- O(N^2) = O((nx*ny)^2).
 #[bounded_stack(bytes = 328)]
 fn pde_laplace2d_assemble(nx: i64, ny: i64, dx: f64, dy: f64) -> Vec<f64> {
     let N: i64 = nx * ny;
@@ -143,7 +159,8 @@ fn pde_laplace2d_assemble(nx: i64, ny: i64, dx: f64, dy: f64) -> Vec<f64> {
 }
 
 // Right-hand side for pde_laplace2d_assemble's system: f at interior
-// points, boundary's border entries at the border rows.
+// points, boundary's border entries at the border rows. WCET = 20 +
+// nx*ny * ~10 cycles.
 #[bounded_stack(bytes = 216)]
 fn pde_laplace2d_rhs(nx: i64, ny: i64, f: ref Vec<f64>, boundary: ref Vec<f64>) -> Vec<f64> {
     let b: Vec<f64> = vec();
@@ -166,7 +183,9 @@ fn pde_laplace2d_rhs(nx: i64, ny: i64, f: ref Vec<f64>, boundary: ref Vec<f64>) 
 
 // Solves u_xx + u_yy = f(x,y) on an nx-by-ny grid (dx, dy spacing), with
 // Dirichlet boundary values from boundary's border entries. f is sampled at
-// every grid point (interior entries only are used).
+// every grid point (interior entries only are used). WCET: N=nx*ny,
+// assemble (O(N^2)) + rhs (O(N)) + mat_solve's O(N^3) -- O(N^3) =
+// O((nx*ny)^3) overall.
 #[bounded_stack(bytes = 648)]
 fn pde_laplace2d_solve(nx: i64, ny: i64, dx: f64, dy: f64, f: ref Vec<f64>, boundary: ref Vec<f64>) -> Vec<f64> {
     let A: Vec<f64> = pde_laplace2d_assemble(nx, ny, dx, dy);
@@ -180,12 +199,14 @@ fn pde_laplace2d_solve(nx: i64, ny: i64, dx: f64, dy: f64, f: ref Vec<f64>, boun
 // FTCS stability number r = alpha*dt/dx^2. The explicit scheme is only
 // stable for r <= 0.5 -- check this before calling pde_heat1d_step/solve.
 #[bounded_stack(bytes = 64)]
+#[wcet(cycles = 15)]
 fn pde_heat1d_stability_r(alpha: f64, dx: f64, dt: f64) -> f64 {
     return alpha * dt / (dx * dx);
 }
 
 // One explicit FTCS time step: u_new[i] = u[i] + r*(u[i+1] - 2u[i] + u[i-1])
-// for interior i, with u_new[0] = left_bc, u_new[n-1] = right_bc.
+// for interior i, with u_new[0] = left_bc, u_new[n-1] = right_bc. WCET =
+// 20 + len(u) * ~10 cycles.
 #[bounded_stack(bytes = 224)]
 fn pde_heat1d_step(u: ref Vec<f64>, alpha: f64, dx: f64, dt: f64, left_bc: f64, right_bc: f64) -> Vec<f64> {
     let n: i64 = len(u) as i64;
@@ -201,7 +222,8 @@ fn pde_heat1d_step(u: ref Vec<f64>, alpha: f64, dx: f64, dt: f64, left_bc: f64, 
     return out;
 }
 
-// Runs `steps` explicit FTCS time steps from initial condition u0.
+// Runs `steps` explicit FTCS time steps from initial condition u0. WCET =
+// 20 + len(u0) (copy) + steps * pde_heat1d_step's O(n) cost -- O(steps*n).
 #[bounded_stack(bytes = 424)]
 fn pde_heat1d_solve(u0: ref Vec<f64>, alpha: f64, dx: f64, dt: f64, steps: i64, left_bc: f64, right_bc: f64) -> Vec<f64> {
     let n: i64 = len(u0) as i64;
@@ -224,11 +246,13 @@ fn pde_heat1d_solve(u0: ref Vec<f64>, alpha: f64, dx: f64, dt: f64, steps: i64, 
 // 2D FTCS stability number r = alpha*dt*(1/dx^2 + 1/dy^2). Stable for
 // r <= 0.5.
 #[bounded_stack(bytes = 72)]
+#[wcet(cycles = 27)]
 fn pde_heat2d_stability_r(alpha: f64, dx: f64, dy: f64, dt: f64) -> f64 {
     return alpha * dt * (1.0 / (dx * dx) + 1.0 / (dy * dy));
 }
 
-// One explicit FTCS time step on an nx-by-ny grid.
+// One explicit FTCS time step on an nx-by-ny grid. WCET = 20 + nx*ny *
+// ~15 cycles.
 #[bounded_stack(bytes = 304)]
 fn pde_heat2d_step(u: ref Vec<f64>, nx: i64, ny: i64, alpha: f64, dx: f64, dy: f64, dt: f64, boundary: ref Vec<f64>) -> Vec<f64> {
     let out: Vec<f64> = vec();
@@ -257,7 +281,8 @@ fn pde_heat2d_step(u: ref Vec<f64>, nx: i64, ny: i64, alpha: f64, dx: f64, dy: f
     return out;
 }
 
-// Runs `steps` explicit FTCS time steps from initial condition u0.
+// Runs `steps` explicit FTCS time steps from initial condition u0. WCET =
+// 20 + N (copy) + steps * pde_heat2d_step's O(N) cost -- O(steps*nx*ny).
 #[bounded_stack(bytes = 520)]
 fn pde_heat2d_solve(u0: ref Vec<f64>, nx: i64, ny: i64, alpha: f64, dx: f64, dy: f64, dt: f64, steps: i64, boundary: ref Vec<f64>) -> Vec<f64> {
     let N: i64 = nx * ny;
@@ -280,12 +305,14 @@ fn pde_heat2d_solve(u0: ref Vec<f64>, nx: i64, ny: i64, alpha: f64, dx: f64, dy:
 // Courant number c*dt/dx. The explicit central-difference scheme is stable
 // for courant <= 1.
 #[bounded_stack(bytes = 64)]
+#[wcet(cycles = 12)]
 fn pde_wave1d_courant(c: f64, dx: f64, dt: f64) -> f64 {
     return c * dt / dx;
 }
 
 // Special first time step (no u at t=-dt exists yet): a Taylor-series start
-// from the initial displacement u0 and initial velocity v0.
+// from the initial displacement u0 and initial velocity v0. WCET = 20 +
+// len(u0) * ~10 cycles.
 #[bounded_stack(bytes = 240)]
 fn pde_wave1d_first_step(u0: ref Vec<f64>, v0: ref Vec<f64>, c: f64, dx: f64, dt: f64, left_bc: f64, right_bc: f64) -> Vec<f64> {
     let n: i64 = len(u0) as i64;
@@ -303,7 +330,8 @@ fn pde_wave1d_first_step(u0: ref Vec<f64>, v0: ref Vec<f64>, c: f64, dx: f64, dt
 }
 
 // One explicit central-difference time step, given the two previous time
-// levels u_prev (t - dt) and u_curr (t).
+// levels u_prev (t - dt) and u_curr (t). WCET = 20 + len(u_curr) * ~10
+// cycles.
 #[bounded_stack(bytes = 240)]
 fn pde_wave1d_step(u_prev: ref Vec<f64>, u_curr: ref Vec<f64>, c: f64, dx: f64, dt: f64, left_bc: f64, right_bc: f64) -> Vec<f64> {
     let n: i64 = len(u_curr) as i64;
@@ -321,7 +349,8 @@ fn pde_wave1d_step(u_prev: ref Vec<f64>, u_curr: ref Vec<f64>, c: f64, dx: f64, 
 }
 
 // Runs pde_wave1d_first_step then `steps - 1` more pde_wave1d_step calls,
-// from initial displacement u0 and initial velocity v0.
+// from initial displacement u0 and initial velocity v0. WCET = 20 + n
+// (copy) + first_step's O(n) + (steps-1) * step's O(n) -- O(steps*n).
 #[bounded_stack(bytes = 544)]
 fn pde_wave1d_solve(u0: ref Vec<f64>, v0: ref Vec<f64>, c: f64, dx: f64, dt: f64, steps: i64, left_bc: f64, right_bc: f64) -> Vec<f64> {
     let n: i64 = len(u0) as i64;
@@ -349,12 +378,13 @@ fn pde_wave1d_solve(u0: ref Vec<f64>, v0: ref Vec<f64>, c: f64, dx: f64, dt: f64
 
 // 2D CFL stability number c^2*dt^2*(1/dx^2 + 1/dy^2). Stable for <= 1.
 #[bounded_stack(bytes = 72)]
+#[wcet(cycles = 33)]
 fn pde_wave2d_courant(c: f64, dx: f64, dy: f64, dt: f64) -> f64 {
     return c * c * dt * dt * (1.0 / (dx * dx) + 1.0 / (dy * dy));
 }
 
 // Special first time step on an nx-by-ny grid, from initial displacement u0
-// and initial velocity v0.
+// and initial velocity v0. WCET = 20 + nx*ny * ~20 cycles.
 #[bounded_stack(bytes = 312)]
 fn pde_wave2d_first_step(u0: ref Vec<f64>, v0: ref Vec<f64>, nx: i64, ny: i64, c: f64, dx: f64, dy: f64, dt: f64, boundary: ref Vec<f64>) -> Vec<f64> {
     let out: Vec<f64> = vec();
@@ -385,7 +415,7 @@ fn pde_wave2d_first_step(u0: ref Vec<f64>, v0: ref Vec<f64>, nx: i64, ny: i64, c
 }
 
 // One explicit central-difference time step on an nx-by-ny grid, given the
-// two previous time levels.
+// two previous time levels. WCET = 20 + nx*ny * ~20 cycles.
 #[bounded_stack(bytes = 312)]
 fn pde_wave2d_step(u_prev: ref Vec<f64>, u_curr: ref Vec<f64>, nx: i64, ny: i64, c: f64, dx: f64, dy: f64, dt: f64, boundary: ref Vec<f64>) -> Vec<f64> {
     let out: Vec<f64> = vec();
@@ -416,6 +446,8 @@ fn pde_wave2d_step(u_prev: ref Vec<f64>, u_curr: ref Vec<f64>, nx: i64, ny: i64,
 }
 
 // Runs pde_wave2d_first_step then `steps - 1` more pde_wave2d_step calls.
+// WCET = 20 + N (copy) + first_step's O(N) + (steps-1) * step's O(N) --
+// O(steps*nx*ny).
 #[bounded_stack(bytes = 632)]
 fn pde_wave2d_solve(u0: ref Vec<f64>, v0: ref Vec<f64>, nx: i64, ny: i64, c: f64, dx: f64, dy: f64, dt: f64, steps: i64, boundary: ref Vec<f64>) -> Vec<f64> {
     let N: i64 = nx * ny;
