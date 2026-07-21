@@ -46,7 +46,8 @@
 //     / pde_wave2d_courant) but does not enforce it at runtime (same
 //     caller-trust convention as the rest of the vani/kosh ecosystem: see
 //     vani-tensor's tensor_reshape not runtime-checking size equality).
-use "../vendor/matrix/src/lib.vani";
+// No `use` statement needed: vanic auto-includes every [deps] entry's
+// source before compiling.
 
 // ── Grid utilities ────────────────────────────────────────────────────────────
 
