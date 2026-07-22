@@ -74,11 +74,11 @@ fn pde_grid2d_index(i: i64, j: i64, ny: i64) -> i64 {
 // Assembles the n x n finite-difference matrix for d^2u/dx^2 on n points
 // spaced dx apart: interior rows use the [1, -2, 1]/dx^2 stencil; the two
 // boundary rows are identity rows (so a Dirichlet value passed straight
-// through mat_solve becomes exactly u[0] / u[n-1]). WCET: mat_zeros(n,n)
+// through mat_solve becomes exactly u[0] / u[n-1]). WCET: matrix::mat_zeros(n,n)
 // allocates n^2 entries, dominating the O(n) stencil loop -- O(n^2).
 #[bounded_stack(bytes = 240)]
 fn pde_laplace1d_assemble(n: i64, dx: f64) -> Vec<f64> {
-    let A: Vec<f64> = mat_zeros(n, n);
+    let A: Vec<f64> = matrix::mat_zeros(n, n);
     let inv_dx2: f64 = 1.0 / (dx * dx);
     set(mut ref A, 0, 1.0);
     set(mut ref A, (n - 1) * n + (n - 1), 1.0);
@@ -117,7 +117,7 @@ fn pde_laplace1d_rhs(n: i64, f: ref Vec<f64>, left_bc: f64, right_bc: f64) -> Ve
 fn pde_laplace1d_solve(n: i64, dx: f64, f: ref Vec<f64>, left_bc: f64, right_bc: f64) -> Vec<f64> {
     let A: Vec<f64> = pde_laplace1d_assemble(n, dx);
     let b: Vec<f64> = pde_laplace1d_rhs(n, f, left_bc, right_bc);
-    return mat_solve(ref A, ref b, n);
+    return matrix::mat_solve(ref A, ref b, n);
 }
 
 // ── 2D Laplace / Poisson (elliptic): u_xx + u_yy = f, Dirichlet BCs ──────────
@@ -125,12 +125,12 @@ fn pde_laplace1d_solve(n: i64, dx: f64, f: ref Vec<f64>, left_bc: f64, right_bc:
 // Assembles the (nx*ny) x (nx*ny) finite-difference matrix for the 2D
 // Laplacian on an nx-by-ny grid (dx, dy spacing): interior rows use the
 // 5-point stencil; border rows (i==0 || i==nx-1 || j==0 || j==ny-1) are
-// identity rows. WCET: N=nx*ny, mat_zeros(N,N) allocates N^2 entries,
+// identity rows. WCET: N=nx*ny, matrix::mat_zeros(N,N) allocates N^2 entries,
 // dominating the O(N) stencil loop -- O(N^2) = O((nx*ny)^2).
 #[bounded_stack(bytes = 328)]
 fn pde_laplace2d_assemble(nx: i64, ny: i64, dx: f64, dy: f64) -> Vec<f64> {
     let N: i64 = nx * ny;
-    let A: Vec<f64> = mat_zeros(N, N);
+    let A: Vec<f64> = matrix::mat_zeros(N, N);
     let inv_dx2: f64 = 1.0 / (dx * dx);
     let inv_dy2: f64 = 1.0 / (dy * dy);
     let i: i64 = 0;
@@ -191,7 +191,7 @@ fn pde_laplace2d_solve(nx: i64, ny: i64, dx: f64, dy: f64, f: ref Vec<f64>, boun
     let A: Vec<f64> = pde_laplace2d_assemble(nx, ny, dx, dy);
     let b: Vec<f64> = pde_laplace2d_rhs(nx, ny, f, boundary);
     let N: i64 = nx * ny;
-    return mat_solve(ref A, ref b, N);
+    return matrix::mat_solve(ref A, ref b, N);
 }
 
 // ── 1D heat equation (parabolic): u_t = alpha * u_xx, Dirichlet BCs ──────────
