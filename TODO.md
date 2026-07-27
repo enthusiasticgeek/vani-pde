@@ -72,11 +72,43 @@
 
 ---
 
+## v0.1.4 (2026-07-27)
+
+- [x] `pde_heat1d_step_neumann`/`pde_heat1d_solve_neumann` -- zero-flux
+      (insulated) boundary conditions for the 1D heat equation, via the
+      standard ghost-point trick (`du/dx=0` at an end means the ghost
+      point mirrors its neighbor, e.g. `u[-1]=u[1]`, substituted into the
+      same interior FTCS formula). Added as new functions alongside the
+      existing Dirichlet `pde_heat1d_step`/`_solve`, not a BC-mode flag
+      on them -- matches this package's existing one-function-per-
+      PDE/BC-combination style (e.g. the separate `pde_laplace1d_*`/
+      `pde_laplace2d_*` rather than a dimension flag).
+- [x] `pde_heat1d_step_periodic`/`pde_heat1d_solve_periodic` -- periodic
+      boundary conditions (the domain wraps: `u[-1]=u[n-1]`,
+      `u[n]=u[0]`), so both ends use the OTHER end's real neighbor
+      instead of a ghost/BC value.
+- [x] `tests/test_heat.vani` extended with two closed-form checks: `du/dx=0`
+      Neumann with `u(x,0)=cos(pi x)` (exact `cos(pi x) exp(-alpha pi^2 t)`,
+      same eigenvalue magnitude as the existing Dirichlet sine case, same
+      `1e-3` tolerance), and periodic with `u(x,0)=cos(2 pi x)` (exact
+      `cos(2 pi x) exp(-4 alpha pi^2 t)`, a *looser* `5e-3` tolerance --
+      confirmed empirically that this doubled-frequency mode genuinely
+      has ~3x the FTCS truncation error at the same dx/dt, not just
+      widened until the assertion happened to pass). Full suite +
+      `vanic audit-safety` re-verified on both backends. No unrelated
+      WCET/stack drift found in this package.
+- Scoped to the 1D heat equation only in this pass (the simplest,
+      clearest case) -- 2D heat and both 1D/2D wave equations still only
+      support Dirichlet BCs; extending them the same way is a natural,
+      contained follow-up, not attempted here to keep this change
+      reviewable.
+
 ## Future
 
 No v0.2.0 is currently planned. Candidates if a concrete need shows up:
-Neumann/periodic boundary conditions (v0.1.0 is Dirichlet-only), implicit
-or Crank-Nicolson schemes for the heat equation (unconditionally stable,
+Neumann/periodic BCs for the 2D heat equation and both wave equations
+(1D done above; 2D heat and wave still Dirichlet-only), implicit or
+Crank-Nicolson schemes for the heat equation (unconditionally stable,
 would need vani-matrix's `mat_solve` per time step -- more expensive per
 step but removes the `r <= 0.5` restriction), sparse matrix assembly for
 the elliptic solvers instead of dense `O((nx*ny)^2)` (would need a new

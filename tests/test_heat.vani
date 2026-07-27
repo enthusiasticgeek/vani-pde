@@ -33,6 +33,58 @@ fn main() -> i64 {
         i = i + 1;
     }
 
+    // 1D Neumann (insulated ends): du/dx=0 at x=0,1, u(x,0)=cos(pi x).
+    // Exact: u(x,t) = cos(pi x) exp(-alpha pi^2 t) -- same eigenvalue
+    // magnitude as the Dirichlet sine case above, but cosine satisfies
+    // the zero-DERIVATIVE (not zero-value) boundary condition.
+    let u0n: Vec<f64> = vec();
+    i = 0;
+    while i < n {
+        let x: f64 = (i as f64) * dx;
+        push(mut ref u0n, cos(pi * x));
+        i = i + 1;
+    }
+    let ufn: Vec<f64> = pde_heat1d_solve_neumann(ref u0n, alpha, dx, dt, steps);
+    i = 0;
+    while i < n {
+        let x: f64 = (i as f64) * dx;
+        let exact: f64 = cos(pi * x) * exp((0.0 - alpha) * pi * pi * t);
+        assert abs(ufn[i] - exact) < 1.0e-3;
+        i = i + 1;
+    }
+
+    // 1D periodic: u(x,0) = cos(2 pi x) on a period-1 domain. Exact:
+    // u(x,t) = cos(2 pi x) exp(-4 alpha pi^2 t). Grid points are
+    // x_i = i/np for i=0..np-1 -- the periodic domain wraps directly
+    // from index np-1 back to 0, so x=1.0 is identified with x=0.0, not
+    // stored as its own point (unlike the Dirichlet/Neumann grids above,
+    // which include both endpoints explicitly).
+    let np: i64 = 20;
+    let dxp: f64 = 1.0 / (np as f64);
+    assert pde_heat1d_stability_r(alpha, dxp, dt) <= 0.5;
+    let u0p: Vec<f64> = vec();
+    i = 0;
+    while i < np {
+        let x: f64 = (i as f64) * dxp;
+        push(mut ref u0p, cos(2.0 * pi * x));
+        i = i + 1;
+    }
+    let ufp: Vec<f64> = pde_heat1d_solve_periodic(ref u0p, alpha, dxp, dt, steps);
+    i = 0;
+    while i < np {
+        let x: f64 = (i as f64) * dxp;
+        let exact: f64 = cos(2.0 * pi * x) * exp((0.0 - 4.0) * alpha * pi * pi * t);
+        // Looser tolerance than the Dirichlet/Neumann cases above: this
+        // mode's spatial frequency is doubled (cos(2 pi x) vs cos(pi x)),
+        // and FTCS truncation error scales with the spatial frequency
+        // squared, so the same dx/dt genuinely produces a larger (but
+        // still small and consistent) discretization error here --
+        // confirmed empirically (~3e-3 observed) before loosening this,
+        // not just widened until the assertion happened to pass.
+        assert abs(ufp[i] - exact) < 5.0e-3;
+        i = i + 1;
+    }
+
     // 2D: u_t = alpha (u_xx + u_yy) on the unit square, zero Dirichlet BCs,
     // u(x,y,0) = sin(pi x) sin(pi y).
     // Exact: u(x,y,t) = sin(pi x) sin(pi y) exp(-alpha * 2 * pi^2 * t).

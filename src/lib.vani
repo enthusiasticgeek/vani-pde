@@ -241,6 +241,90 @@ fn pde_heat1d_solve(u0: ref Vec<f64>, alpha: f64, dx: f64, dt: f64, steps: i64, 
     return u;
 }
 
+// ── 1D heat equation, Neumann (zero-flux/insulated) and periodic BCs ────────
+// Same explicit FTCS interior update as pde_heat1d_step; only the boundary
+// treatment differs. Added alongside the Dirichlet version above rather
+// than as a BC-mode parameter to it, matching this package's existing
+// style of one function per PDE/BC combination (see e.g. the separate
+// pde_laplace1d_*/pde_laplace2d_* rather than a dimension flag).
+
+// Neumann (zero-flux) step: du/dx = 0 at both ends, via the standard
+// ghost-point trick (reflect across the boundary: u[-1] = u[1], u[n] =
+// u[n-2]), substituted into the same FTCS formula as the interior --
+// u_new[0] = u[0] + r*2*(u[1]-u[0]), and symmetrically at the right end.
+// WCET = 20 + len(u) * ~10 cycles.
+#[bounded_stack(bytes = 232)]
+fn pde_heat1d_step_neumann(u: ref Vec<f64>, alpha: f64, dx: f64, dt: f64) -> Vec<f64> {
+    let n: i64 = len(u) as i64;
+    let r: f64 = pde_heat1d_stability_r(alpha, dx, dt);
+    let out: Vec<f64> = vec();
+    push(mut ref out, u[0] + 2.0 * r * (u[1] - u[0]));
+    let i: i64 = 1;
+    while i < n - 1 {
+        push(mut ref out, u[i] + r * (u[i + 1] - 2.0 * u[i] + u[i - 1]));
+        i = i + 1;
+    }
+    push(mut ref out, u[n - 1] + 2.0 * r * (u[n - 2] - u[n - 1]));
+    return out;
+}
+
+// WCET = 20 + len(u0) (copy) + steps * pde_heat1d_step_neumann's O(n) cost
+// -- O(steps*n).
+#[bounded_stack(bytes = 432)]
+fn pde_heat1d_solve_neumann(u0: ref Vec<f64>, alpha: f64, dx: f64, dt: f64, steps: i64) -> Vec<f64> {
+    let n: i64 = len(u0) as i64;
+    let u: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < n {
+        push(mut ref u, u0[i]);
+        i = i + 1;
+    }
+    let s: i64 = 0;
+    while s < steps {
+        u = pde_heat1d_step_neumann(ref u, alpha, dx, dt);
+        s = s + 1;
+    }
+    return u;
+}
+
+// Periodic step: the domain wraps around (u[-1] = u[n-1], u[n] = u[0]),
+// so both ends use the OTHER end's neighbor instead of a ghost/BC value --
+// u_new[0] = u[0] + r*(u[1] - 2u[0] + u[n-1]), u_new[n-1] = u[n-1] +
+// r*(u[0] - 2u[n-1] + u[n-2]). WCET = 20 + len(u) * ~10 cycles.
+#[bounded_stack(bytes = 232)]
+fn pde_heat1d_step_periodic(u: ref Vec<f64>, alpha: f64, dx: f64, dt: f64) -> Vec<f64> {
+    let n: i64 = len(u) as i64;
+    let r: f64 = pde_heat1d_stability_r(alpha, dx, dt);
+    let out: Vec<f64> = vec();
+    push(mut ref out, u[0] + r * (u[1] - 2.0 * u[0] + u[n - 1]));
+    let i: i64 = 1;
+    while i < n - 1 {
+        push(mut ref out, u[i] + r * (u[i + 1] - 2.0 * u[i] + u[i - 1]));
+        i = i + 1;
+    }
+    push(mut ref out, u[n - 1] + r * (u[0] - 2.0 * u[n - 1] + u[n - 2]));
+    return out;
+}
+
+// WCET = 20 + len(u0) (copy) + steps * pde_heat1d_step_periodic's O(n)
+// cost -- O(steps*n).
+#[bounded_stack(bytes = 432)]
+fn pde_heat1d_solve_periodic(u0: ref Vec<f64>, alpha: f64, dx: f64, dt: f64, steps: i64) -> Vec<f64> {
+    let n: i64 = len(u0) as i64;
+    let u: Vec<f64> = vec();
+    let i: i64 = 0;
+    while i < n {
+        push(mut ref u, u0[i]);
+        i = i + 1;
+    }
+    let s: i64 = 0;
+    while s < steps {
+        u = pde_heat1d_step_periodic(ref u, alpha, dx, dt);
+        s = s + 1;
+    }
+    return u;
+}
+
 // ── 2D heat equation (parabolic): u_t = alpha*(u_xx + u_yy), Dirichlet BCs ───
 
 // 2D FTCS stability number r = alpha*dt*(1/dx^2 + 1/dy^2). Stable for
