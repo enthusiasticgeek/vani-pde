@@ -4,8 +4,33 @@
 
 use "../src/lib.vani";
 
+fn close(a: f64, b: f64) -> bool {
+    return abs(a - b) < 1.0e-12;
+}
+
 fn main() -> i64 {
     let pi: f64 = f64_pi();
+
+    // pde_wave1d_first_step/pde_wave1d_step directly, on a tiny
+    // hand-computable grid -- exact finite-difference formulas, no
+    // discretization-error tolerance needed. Had no direct call site of
+    // their own -- only exercised transitively inside pde_wave1d_solve.
+    let u0f: Vec<f64> = vec(1.0, 2.0, 3.0, 4.0);
+    let v0f: Vec<f64> = vec(0.1, 0.2, 0.3, 0.4);
+    // c=1, dx=1, dt=0.1 -> courant=0.1, courant2=0.01.
+    let first: Vec<f64> = pde_wave1d_first_step(ref u0f, ref v0f, 1.0, 1.0, 0.1, 100.0, 200.0);
+    assert close(first[0], 100.0);
+    assert close(first[1], 2.0 + 0.1 * 0.2 + 0.5 * 0.01 * (3.0 - 4.0 + 1.0));
+    assert close(first[2], 3.0 + 0.1 * 0.3 + 0.5 * 0.01 * (4.0 - 6.0 + 2.0));
+    assert close(first[3], 200.0);
+
+    let u_prev: Vec<f64> = vec(0.0, 1.0, 1.0, 0.0);
+    let u_curr: Vec<f64> = vec(0.0, 2.0, 2.0, 0.0);
+    let stp: Vec<f64> = pde_wave1d_step(ref u_prev, ref u_curr, 1.0, 1.0, 0.1, 9.0, 8.0);
+    assert close(stp[0], 9.0);
+    assert close(stp[1], 2.0 * 2.0 - 1.0 + 0.01 * (2.0 - 4.0 + 0.0));
+    assert close(stp[2], 2.0 * 2.0 - 1.0 + 0.01 * (0.0 - 4.0 + 2.0));
+    assert close(stp[3], 8.0);
 
     // 1D: u_tt = c^2 u_xx on [0,1], u(0,t)=u(1,t)=0, u(x,0)=sin(pi x),
     // u_t(x,0)=0. Exact: u(x,t) = sin(pi x) cos(pi c t).
