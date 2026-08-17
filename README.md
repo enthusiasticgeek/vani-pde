@@ -6,6 +6,8 @@ Depends on [vani-matrix](https://github.com/enthusiasticgeek/vani-matrix) for
 `mat_zeros`/`mat_solve`, used by the two elliptic (steady-state) solvers.
 Does **not** depend on vani-calculus (see "Design decisions" below).
 
+**API reference / tutorial:** <https://enthusiasticgeek.github.io/vani-pde/>
+
 ## Add to your project
 
 ```toml
