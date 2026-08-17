@@ -1,6 +1,6 @@
 // vani-pde  v0.1.0 — finite-difference PDE solvers
 //
-// IMPORTANT — do NOT reimplement vāṇी compiler builtins.
+// IMPORTANT — do NOT reimplement vāṇī compiler builtins.
 // Already available as builtins (call directly, never redeclare here):
 //   sin cos exp sqrt abs f64_pi()  push pop len set vec
 //

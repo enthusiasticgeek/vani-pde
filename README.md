@@ -1,6 +1,6 @@
 # vani-pde
 
-Finite-difference PDE solver library for the [vāṇी compiler](https://github.com/enthusiasticgeek/vani-compiler).
+Finite-difference PDE solver library for the [vāṇī compiler](https://github.com/enthusiasticgeek/vani-compiler).
 
 Depends on [vani-matrix](https://github.com/enthusiasticgeek/vani-matrix) for
 `mat_zeros`/`mat_solve`, used by the two elliptic (steady-state) solvers.
@@ -83,7 +83,7 @@ Laplacian is exact for quadratics), 1D/2D heat against
 
 ## What this library does NOT provide
 
-These are already vāṇी compiler builtins — call them directly, no import needed:
+These are already vāṇī compiler builtins — call them directly, no import needed:
 
 `sin` `cos` `exp` `sqrt` `abs` `f64_pi()` `push` `pop` `len` `set` `vec`
 
